@@ -807,7 +807,7 @@ input::placeholder { color: var(--muted); }
 // API
 // ════════════════════════════════════════
 const FMP_KEY = 'agbZAx8her3dLIW4GI8HpvQnhM1LXJM0';
-const FMP_BASE = 'https://financialmodelingprep.com/api';
+const FMP_BASE = 'https://financialmodelingprep.com/stable';
 
 async function fmpFetch(path) {
   const sep = path.includes('?') ? '&' : '?';
@@ -846,7 +846,7 @@ let priceCache = {};
 let expandedIndex = -1;
 
 async function fetchQuote(ticker) {
-  const data = await fmpFetch(`/v3/quote/${ticker}`);
+  const data = await fmpFetch(`/quote?symbol=${ticker}`);
   if (!data?.length) throw new Error(`Ticker "${ticker}" not found`);
   const q = data[0];
   return { price: q.price, prevClose: q.previousClose, name: q.name || ticker };
@@ -854,18 +854,18 @@ async function fetchQuote(ticker) {
 
 async function fetchFundamentals(ticker) {
   try {
-    const [ratios, analystRec, priceTarget] = await Promise.allSettled([
-      fmpFetch(`/v3/ratios-ttm/${ticker}`),
-      fmpFetch(`/v3/analyst-stock-recommendations/${ticker}?limit=1`),
-      fmpFetch(`/v4/price-target-consensus?symbol=${ticker}`),
+    const [ratios, gradesConsensus, priceTarget] = await Promise.allSettled([
+      fmpFetch(`/ratios-ttm?symbol=${ticker}`),
+      fmpFetch(`/grades-consensus?symbol=${ticker}`),
+      fmpFetch(`/price-target-consensus?symbol=${ticker}`),
     ]);
     const r = ratios.value?.[0] || {};
-    const c = analystRec.value?.[0] || {};
+    const g = gradesConsensus.value?.[0] || {};
     const pt = priceTarget.value?.[0] || {};
 
-    const buy  = (c.analystRatingsbuy||0) + (c.analystRatingsOverweight||0);
-    const hold = c.analystRatingsHold || 0;
-    const sell = (c.analystRatingsUnderweight||0) + (c.analystRatingsSell||0);
+    const buy  = (g.strongBuy || 0) + (g.buy || 0);
+    const hold = g.hold || 0;
+    const sell = (g.sell || 0) + (g.strongSell || 0);
     const total = buy + hold + sell;
 
     let rec = '—';
@@ -875,8 +875,8 @@ async function fetchFundamentals(ticker) {
     }
 
     return {
-      eps: r.epsttm || null,
-      forwardPe: r.priceEarningsRatioTTM || null,
+      eps: r.netIncomePerShareTTM || r.epsTTM || null,
+      forwardPe: r.priceToEarningsRatioTTM || r.priceEarningsRatioTTM || null,
       roe: r.returnOnEquityTTM != null ? r.returnOnEquityTTM * 100 : null,
       targetMean: pt.targetConsensus || null,
       targetHigh: pt.targetHigh || null,
@@ -1257,7 +1257,7 @@ async function runScreen() {
     params.set('isActivelyTrading', 'true');
 
     setStatus('Fetching stock universe...'); pf.style.width = '15%';
-    const candidates = await fmpFetch(`/v3/stock-screener?${params}`);
+    const candidates = await fmpFetch(`/company-screener?${params}`);
     if (!candidates?.length) throw new Error('No candidates found');
 
     setStatus(`Analyzing ${candidates.length} stocks...`); pf.style.width = '25%';
@@ -1305,21 +1305,21 @@ function setStatus(msg) {
 async function enrichTicker(ticker, candidates) {
   try {
     const base = candidates.find(c => c.symbol === ticker) || {};
-    const [ratios, analystRec, priceTarget, keyMetrics] = await Promise.allSettled([
-      fmpFetch(`/v3/ratios-ttm/${ticker}`),
-      fmpFetch(`/v3/analyst-stock-recommendations/${ticker}?limit=1`),
-      fmpFetch(`/v4/price-target-consensus?symbol=${ticker}`),
-      fmpFetch(`/v3/key-metrics-ttm/${ticker}`),
+    const [ratios, gradesConsensus, priceTarget, keyMetrics] = await Promise.allSettled([
+      fmpFetch(`/ratios-ttm?symbol=${ticker}`),
+      fmpFetch(`/grades-consensus?symbol=${ticker}`),
+      fmpFetch(`/price-target-consensus?symbol=${ticker}`),
+      fmpFetch(`/key-metrics-ttm?symbol=${ticker}`),
     ]);
 
     const r = ratios.value?.[0] || {};
-    const c = analystRec.value?.[0] || {};
+    const g = gradesConsensus.value?.[0] || {};
     const pt = priceTarget.value?.[0] || {};
     const km = keyMetrics.value?.[0] || {};
 
-    const buy = (c.analystRatingsbuy||0) + (c.analystRatingsOverweight||0);
-    const hold = c.analystRatingsHold || 0;
-    const sell = (c.analystRatingsUnderweight||0) + (c.analystRatingsSell||0);
+    const buy  = (g.strongBuy || 0) + (g.buy || 0);
+    const hold = g.hold || 0;
+    const sell = (g.sell || 0) + (g.strongSell || 0);
     const total = buy + hold + sell;
 
     let rec = '—';
@@ -1334,14 +1334,16 @@ async function enrichTicker(ticker, candidates) {
     return {
       ticker, name: base.companyName || ticker, sector: base.sector || '—',
       price, marketCap: base.marketCap || 0,
-      fwdPe: r.priceEarningsRatioTTM || null,
+      fwdPe: r.priceToEarningsRatioTTM || r.priceEarningsRatioTTM || null,
       roe: r.returnOnEquityTTM != null ? r.returnOnEquityTTM * 100 : null,
-      roic: km.roicTTM != null ? km.roicTTM * 100 : null,
-      deRatio: r.debtEquityRatioTTM || null,
+      roic: km.returnOnInvestedCapitalTTM != null ? km.returnOnInvestedCapitalTTM * 100
+            : (km.roicTTM != null ? km.roicTTM * 100 : null),
+      deRatio: r.debtToEquityRatioTTM || r.debtEquityRatioTTM || null,
       grossMargin: r.grossProfitMarginTTM != null ? r.grossProfitMarginTTM * 100 : null,
       fcfYield: km.freeCashFlowYieldTTM != null ? km.freeCashFlowYieldTTM * 100 : null,
       revenueGrowth: r.revenueGrowthTTM != null ? r.revenueGrowthTTM * 100 : null,
-      epsGrowth: r.epsgrowthTTM != null ? r.epsgrowthTTM * 100 : null,
+      epsGrowth: r.epsGrowthTTM != null ? r.epsGrowthTTM * 100
+                 : (r.epsgrowthTTM != null ? r.epsgrowthTTM * 100 : null),
       epsGrowthQ: r.epsgrowthQuarterlyYOY != null ? r.epsgrowthQuarterlyYOY * 100 : null,
       analystBuy: buy, analystHold: hold, analystSell: sell, analystCount: total, analystRec: rec,
       targetMean: pt.targetConsensus || null, targetHigh: pt.targetHigh || null, targetLow: pt.targetLow || null,
